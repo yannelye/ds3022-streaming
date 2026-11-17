@@ -1,90 +1,279 @@
-"""Prefect flow: raw Parquet -> DuckDB (two kinds of duplicates removed) -> one chart.
 
-  python quakes_flow.py
+"""Prefect flow: Bluesky Parquet -> DuckDB -> analysis tables -> charts.
+
+Run on full data:
+    python flow.py
+
+Run on committed sample:
+    python flow.py data/sample
 """
 import os
+import sys
+from pathlib import Path
 
 import duckdb
 import matplotlib
 
-matplotlib.use("Agg")  # draw to a file, no window
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from prefect import flow, get_run_logger, task
 
-DB = "quakes.duckdb"
-RAW = "data/raw/*.parquet"
-CHART = "charts/quakes_per_day.png"
+from prefect import flow, get_run_logger, task
 
 
 @task(retries=2, retry_delay_seconds=5)
-def load_raw():
-    with duckdb.connect(DB) as con:  # the flow is the ONLY writer of quakes.duckdb
-        con.execute(f"CREATE OR REPLACE TABLE raw_quakes AS SELECT * FROM read_parquet('{RAW}')")
-        return con.execute("SELECT count(*) FROM raw_quakes").fetchone()[0]
+def load_raw(source_dir, db_path):
+    files = sorted(Path(source_dir).glob("*.parquet"))
+    if not files:
+        raise FileNotFoundError(
+            f"No Parquet files found in {source_dir}"
+        )
+
+    with duckdb.connect(db_path) as con:
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE raw_bluesky AS
+            SELECT * FROM read_parquet(?)
+            """,
+            [str(Path(source_dir) / "*.parquet")],
+        )
+        return con.execute(
+            "SELECT COUNT(*) FROM raw_bluesky"
+        ).fetchone()[0]
 
 
 @task
-def clean():
-    with duckdb.connect(DB) as con:
-        # 1. The same Kafka record landed twice (at-least-once): keep one copy.
+def stage(db_path):
+    """Remove duplicate Kafka records but retain malformed raw rows."""
+    with duckdb.connect(db_path) as con:
         con.execute("""
             CREATE OR REPLACE TABLE stg_records AS
-            SELECT DISTINCT * EXCLUDE (landed_at)
-            FROM raw_quakes
-            WHERE action <> 'malformed' AND unid IS NOT NULL
-        """)
-        # 2. The same earthquake sent several times (create, updates): keep the latest.
-        #    Same key -> same partition -> a higher offset is a later version.
-        con.execute("""
-            CREATE OR REPLACE TABLE quakes AS
-            SELECT unid, CAST(event_time AS TIMESTAMP) AS event_time, mag, magtype,
-                   region, lat, lon, depth
+            SELECT * EXCLUDE (rn)
             FROM (
-                SELECT *, row_number() OVER (PARTITION BY unid ORDER BY kafka_offset DESC) AS rn
-                FROM stg_records
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY kafka_partition, kafka_offset
+                        ORDER BY landed_at DESC
+                    ) AS rn
+                FROM raw_bluesky
             )
             WHERE rn = 1
         """)
+
+        malformed = con.execute("""
+            SELECT COUNT(*)
+            FROM raw_bluesky
+            WHERE action = 'malformed'
+        """).fetchone()[0]
+
+        unique_kafka = con.execute("""
+            SELECT COUNT(*) FROM stg_records
+        """).fetchone()[0]
+
+    return {
+        "malformed": malformed,
+        "unique_kafka": unique_kafka,
+    }
+
+
+@task
+def entities(db_path):
+    """Keep the latest event for each Bluesky post."""
+    with duckdb.connect(db_path) as con:
+        con.execute("""
+            CREATE OR REPLACE TABLE bluesky_posts AS
+            WITH post_events AS (
+                SELECT
+                    did,
+                    rkey,
+                    operation,
+                    action,
+                    TRY_CAST(event_time AS TIMESTAMPTZ)
+                        AS event_time,
+                    TRY_CAST(langs AS JSON) AS langs_json,
+                    is_reply,
+                    kafka_partition,
+                    kafka_offset
+                FROM stg_records
+                WHERE action <> 'malformed'
+                  AND did IS NOT NULL
+                  AND rkey IS NOT NULL
+                  AND collection = 'app.bsky.feed.post'
+            ),
+            ranked AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY did, rkey
+                        ORDER BY kafka_offset DESC
+                    ) AS rn
+                FROM post_events
+            )
+            SELECT
+                did,
+                rkey,
+                operation,
+                action,
+                event_time,
+                COALESCE(
+                    JSON_EXTRACT_STRING(langs_json, '$[0]'),
+                    'unknown'
+                ) AS language,
+                is_reply,
+                kafka_partition,
+                kafka_offset
+            FROM ranked
+            WHERE rn = 1
+        """)
+
+        return con.execute("""
+            SELECT COUNT(*) FROM bluesky_posts
+        """).fetchone()[0]
+
+
+@task
+def marts(db_path):
+    """Create hourly and language summary tables."""
+    with duckdb.connect(db_path) as con:
+        con.execute("""
+            CREATE OR REPLACE TABLE mart_posts_hourly AS
+            SELECT
+                TIME_BUCKET(
+                    INTERVAL '1 hour', event_time
+                ) AS hour,
+                COUNT(*) AS post_count
+            FROM bluesky_posts
+            WHERE operation = 'create'
+              AND event_time IS NOT NULL
+            GROUP BY hour
+            ORDER BY hour
+        """)
+
+        con.execute("""
+            CREATE OR REPLACE TABLE mart_posts_language AS
+            SELECT
+                language,
+                COUNT(*) AS post_count
+            FROM bluesky_posts
+            WHERE operation = 'create'
+            GROUP BY language
+            ORDER BY post_count DESC
+        """)
+
         return {
-            "malformed": con.execute("SELECT count(*) FROM raw_quakes WHERE action = 'malformed'").fetchone()[0],
-            "records": con.execute("SELECT count(*) FROM stg_records").fetchone()[0],
-            "events": con.execute("SELECT count(*) FROM quakes").fetchone()[0],
+            "hours": con.execute(
+                "SELECT COUNT(*) FROM mart_posts_hourly"
+            ).fetchone()[0],
+            "languages": con.execute(
+                "SELECT COUNT(*) FROM mart_posts_language"
+            ).fetchone()[0],
         }
 
 
 @task
-def chart():
-    with duckdb.connect(DB, read_only=True) as con:
-        rows = con.execute("""
-            SELECT time_bucket(INTERVAL '1 day', event_time) AS day,  -- 1-day tumbling windows
-                   count(*) AS quakes
-            FROM quakes
-            GROUP BY day
-            ORDER BY day
+def charts(db_path, chart_dir):
+    """Generate charts with labelled axes."""
+    os.makedirs(chart_dir, exist_ok=True)
+
+    with duckdb.connect(db_path, read_only=True) as con:
+        hourly = con.execute("""
+            SELECT hour, post_count
+            FROM mart_posts_hourly
+            ORDER BY hour
         """).fetchall()
-    os.makedirs("charts", exist_ok=True)
-    days = [r[0].strftime("%d %b") for r in rows]
-    plt.figure(figsize=(8, 4))
-    plt.bar(days, [r[1] for r in rows], color="#2a7fb8")
-    plt.title("Earthquakes per day (EMSC), duplicates removed")
-    plt.ylabel("events")
+
+        languages = con.execute("""
+            SELECT language, post_count
+            FROM mart_posts_language
+            ORDER BY post_count DESC
+            LIMIT 10
+        """).fetchall()
+
+    if not hourly:
+        raise ValueError("No hourly posts available to chart")
+
+    hours = [r[0] for r in hourly]
+    counts = [r[1] for r in hourly]
+
+    plt.figure(figsize=(11, 5))
+    plt.plot(hours, counts, marker="o", color="#277DA1")
+    plt.title("Bluesky Posts by Hour")
+    plt.xlabel("Hour (UTC)")
+    plt.ylabel("Number of posts")
+    plt.xticks(rotation=45)
+    plt.grid(axis="y", alpha=0.25)
     plt.tight_layout()
-    plt.savefig(CHART, dpi=120)
-    return CHART
+
+    hourly_path = os.path.join(
+        chart_dir, "bluesky_posts_per_hour.png"
+    )
+    plt.savefig(hourly_path, dpi=150)
+    plt.close()
+
+    if languages:
+        names = [r[0] for r in languages][::-1]
+        values = [r[1] for r in languages][::-1]
+
+        plt.figure(figsize=(9, 5))
+        plt.barh(names, values, color="#277DA1")
+        plt.title("Top 10 Languages in Bluesky Posts")
+        plt.xlabel("Number of posts")
+        plt.ylabel("Language code")
+        plt.tight_layout()
+
+        language_path = os.path.join(
+            chart_dir, "bluesky_languages.png"
+        )
+        plt.savefig(language_path, dpi=150)
+        plt.close()
+    else:
+        language_path = None
+
+    return {
+        "hourly": hourly_path,
+        "languages": language_path,
+    }
 
 
-@flow(name="quakes-pipeline")
-def quakes_pipeline():
+@flow(name="bluesky-pipeline")
+def bluesky_pipeline(source_dir="data/raw"):
     log = get_run_logger()
-    raw = load_raw()
-    n = clean()
-    path = chart()
-    log.info("Raw records landed:        %d", raw)
-    log.info("Malformed (kept in raw):   %d", n["malformed"])
-    log.info("Unique Kafka records:      %d", n["records"])
-    log.info("Unique earthquakes:        %d", n["events"])
-    log.info("Chart: %s", path)
+
+    is_sample = Path(source_dir).name == "sample"
+
+    db_path = (
+        "bluesky_sample.duckdb"
+        if is_sample
+        else "bluesky.duckdb"
+    )
+
+    chart_dir = (
+        "charts/sample"
+        if is_sample
+        else "charts"
+    )
+
+    raw_count = load_raw(source_dir, db_path)
+    stage_counts = stage(db_path)
+    unique_posts = entities(db_path)
+    mart_counts = marts(db_path)
+    chart_paths = charts(db_path, chart_dir)
+
+    log.info("Raw records landed:        %d", raw_count)
+    log.info(
+        "Malformed (kept in raw):   %d",
+        stage_counts["malformed"],
+    )
+    log.info(
+        "Unique Kafka records:      %d",
+        stage_counts["unique_kafka"],
+    )
+    log.info("Unique Bluesky posts:      %d", unique_posts)
+
+    log.info("Hourly windows: %d", mart_counts["hours"])
+    log.info("Languages: %d", mart_counts["languages"])
+    log.info("Hourly chart: %s", chart_paths["hourly"])
+    log.info("Language chart: %s", chart_paths["languages"])
 
 
 if __name__ == "__main__":
-    quakes_pipeline()
+    source = sys.argv[1] if len(sys.argv) > 1 else "data/raw"
+    bluesky_pipeline(source)
