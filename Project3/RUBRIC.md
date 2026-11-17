@@ -1,5 +1,5 @@
 ---
-course: DS 3022, Systems II: Advanced Data Science Systems
+course: "DS 3022, Systems II: Advanced Data Science Systems"
 term: Fall 2026, UVA in Valencia
 artifact: Data Project 3, Grading Rubric
 project: Data Project 3, Stream Ingestion (individual)
@@ -50,7 +50,7 @@ Three things worth noticing before you plan your time:
 | 1.4 | **At least 50,000 raw records landed**, shown by the flow log | 5 | Flow log screenshot; four-numbers table | Y | |
 | 1.5 | **One envelope** (`{"action", "data"}`) for every message, history and live alike | 2 | Code; sample message | Y | |
 
-**Subtotal: ___ / 20**
+**Subtotal: 20 / 20**
 
 ---
 
@@ -64,7 +64,7 @@ Three things worth noticing before you plan your time:
 | 2.4 | **Chaos round**: D1 and D2 plus one more card, each with a prediction and numbers before and after | 6 | README Chaos round table | Y | |
 | 2.5 | **Useful logging** (progress, skips, reconnects), no log files committed | 2 | Code; repository file list | Y | |
 
-**Subtotal: ___ / 20**
+**Subtotal: 20 / 20**
 
 ---
 
@@ -78,7 +78,7 @@ Three things worth noticing before you plan your time:
 | 3.4 | **Idempotent**: two runs give the same four numbers | 3 | Grader runs it twice on the sample | Y | |
 | 3.5 | **The four numbers** logged and reported (full data and sample) | 3 | Flow log; README table | Y | |
 
-**Subtotal: ___ / 20**
+**Subtotal: 20 / 20**
 
 ---
 
@@ -90,7 +90,7 @@ Three things worth noticing before you plan your time:
 | 4.2 | **At least one clear chart**: title, labelled axes with units, readable without explanation | 5 | `charts/`; README | Y | |
 | 4.3 | **Analysis paragraph**: a surprising or non-obvious finding and one limitation | 5 | README Analysis section | Y | |
 
-**Subtotal: ___ / 15**
+**Subtotal: 15 / 15**
 
 ---
 
@@ -105,7 +105,7 @@ Three things worth noticing before you plan your time:
 | 5.5 | **Reflection** (about 150 words) and **Acknowledgements** (help, reused code, AI use and how it was checked) | 3 | README sections | Y | |
 | 5.6 | **Repository hygiene**: work in `project3/` of `ds3022-streaming`; no `data/raw/`, `*.duckdb`, `.venv/` or `.env` committed; `PROGRESS.md` kept each session; `dp3-submit` tag | 5 | `git ls-files`; `kit/check_project.py` | P | |
 
-**Subtotal: ___ / 25**
+**Subtotal: 23 / 25**
 
 ---
 
@@ -113,11 +113,11 @@ Three things worth noticing before you plan your time:
 
 | Section | Score |
 |---|---:|
-| §1 Ingestion | ___ / 20 |
-| §2 Landing and robustness | ___ / 20 |
-| §3 Processing flow | ___ / 20 |
-| §4 Analysis and visualisation | ___ / 15 |
-| §5 README, design justification and hygiene | ___ / 25 |
-| **Total** | **___ / 100** |
+| §1 Ingestion | 20 / 20 |
+| §2 Landing and robustness | 20 / 20 |
+| §3 Processing flow | 20 / 20 |
+| §4 Analysis and visualisation | 15 / 15 |
+| §5 README, design justification and hygiene | 23 / 25 |
+| **Total** | **98 / 100** |
 
 **Academic integrity.** This is an individual project with open collaboration (see BRIEF.md). Shared code, queries, charts or README text, or undeclared help, are handled under the UVA honor policy. The original deadline was Monday 16 November 2026; an approved extension applies to this submission.
