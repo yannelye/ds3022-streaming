@@ -1,7 +1,7 @@
 # Source Design Card (checkpoint A, Session 1 · Thu 05 Nov)
 
 **Name:** Yannely Escalante Ruiz  
-**Date:** November 09, 2026
+**Date:** November 17, 2026 (extension approved by professor)
 
 ## 1. The source
 
@@ -65,7 +65,7 @@ I can answer this by grouping posts into hourly time windows using their timesta
 
 - [x] I ran the probe for this source today and messages arrived (own idea: it worked here, in class)
 - [x] The rate in section 3 is measured, not guessed
-- [ ] My volume plan reaches 50,000 raw records before Session 3 (Thu 12 Nov), with margin
+- [x] My volume plan reaches 50,000 raw records with margin under my approved extension (completed Nov 17, I requested an extension, approved by the professor) 
 - [x] It needs no API key or account that takes days to get
 - [x] My key has a reason that fits my question
 - [x] I named both kinds of duplicates for my source
